@@ -1,0 +1,121 @@
+﻿import { AgentManager } from "./agents/AgentManager";
+import { AgentState } from "./models/agent";
+import { CallManager } from "./calls/CallManager";
+import { CallState } from "./models/call";
+import { ProgressiveDialer } from "./dialer/ProgressiveDialer";
+import { FastProvider } from "./providers/FastProvider";
+import { UnreliableProvider } from "./providers/UnreliableProvider";
+import { PacingEngine } from "./pacing/PacingEngine";
+import { SafetyController } from "./safety/SafetyController";
+import { TimeoutCleanup } from "./utils/TimeoutCleanup";
+
+async function main() {
+  // --- CHOOSE PROVIDER ---
+  const useFastProvider = false; // Change to false to test UnreliableProvider
+  // ---
+
+  const agentManager = new AgentManager();
+  const callManager = new CallManager();
+
+  const cleanup = new TimeoutCleanup(agentManager, callManager, 30000);
+  const cleanupInterval = cleanup.startCleanupInterval(10000);
+
+  // Only ONE provider declaration, using the toggle
+  const provider = useFastProvider
+    ? new FastProvider("fast-provider")
+    : new UnreliableProvider("unreliable-provider", 0.3, 0.2, 300);
+
+  const dialer = new ProgressiveDialer(agentManager, callManager, provider);
+  const pacingEngine = new PacingEngine(callManager, agentManager);
+  const safetyController = new SafetyController(agentManager, callManager);
+
+  // Add 5 agents
+  for (let i = 1; i <= 5; i++) {
+    agentManager.addAgent({
+      id: `A${i}`,
+      name: `Agent ${i}`,
+      state: AgentState.AVAILABLE,
+    });
+  }
+
+  // 10 borrowers
+  const borrowers = Array.from({ length: 10 }, (_, i) => `Borrower-${i + 1}`);
+
+  console.log("=== Predictive Dialing Simulation ===");
+  console.log(`Agents available: ${agentManager.getAvailableAgents().length}`);
+  console.log(`Borrowers: ${borrowers.length}`);
+  console.log("");
+
+  // 1. Get pacing recommendation
+  console.log("1. Pacing Analysis:");
+  const recommendation = pacingEngine.analyze();
+  console.log(`   Recommended calls: ${recommendation.recommendedCalls}`);
+  console.log(
+    `   Confidence: ${(recommendation.confidence * 100).toFixed(0)}%`,
+  );
+  console.log(`   Reasoning: ${recommendation.reasoning.join(", ")}`);
+  console.log("");
+
+  // 2. Safety Controller evaluation
+  console.log("2. Safety Controller:");
+  const safetyDecision = safetyController.evaluate(
+    recommendation.recommendedCalls,
+    true,
+  );
+  console.log(
+    `   Decision: ${safetyDecision.approved ? "APPROVED ✅" : "REJECTED ❌"}`,
+  );
+  console.log(`   Approved calls: ${safetyDecision.approvedCalls}`);
+  console.log(`   Reason: ${safetyDecision.reason}`);
+  if (safetyDecision.fallbackToProgressive) {
+    console.log(`   ⚠️ FALLBACK TO PROGRESSIVE DIALING`);
+  }
+  console.log("");
+
+  // 3. Dial using the safety-approved recommendation
+  console.log("3. Dialing with safety-approved recommendation:");
+  const dialResult = await dialer.dialProgressive(
+    borrowers.slice(0, safetyDecision.approvedCalls),
+  );
+
+  console.log(`   Dialed: ${dialResult.dialed}`);
+  console.log(`   Failed: ${dialResult.failed}`);
+  console.log("");
+
+  // 4. Show final state
+  console.log("4. Final State:");
+  console.log(
+    `   Available agents: ${agentManager.getAvailableAgents().length}`,
+  );
+  console.log(`   Active calls: ${callManager.getActiveCalls().length}`);
+
+  const activeCalls = callManager.getActiveCalls();
+  if (activeCalls.length > 0) {
+    console.log("   Call states:");
+    activeCalls.forEach((call) => {
+      console.log(
+        `     ${call.id}: ${call.state} (Agent: ${call.agentId || "none"})`,
+      );
+    });
+  }
+
+  console.log("\n   Agent states:");
+  for (let i = 1; i <= 5; i++) {
+    const agent = agentManager.getAgent(`A${i}`);
+    if (agent) {
+      console.log(`     ${agent.name}: ${agent.state}`);
+    }
+  }
+
+  // 5. Safety check
+  console.log("\n5. System Safety Check:");
+  console.log(
+    `   System safe: ${safetyController.isSystemSafe() ? "✅ YES" : "❌ NO"}`,
+  );
+  console.log(
+    `   Calls waiting for agents: ${callManager.getCallsWaitingForAgent().length}`,
+  );
+}
+
+// Run the test
+main().catch(console.error);
