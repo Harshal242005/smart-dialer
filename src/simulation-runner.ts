@@ -36,15 +36,17 @@ async function runScenario(scenario: Scenario) {
     });
   }
 
-  // Choose provider
+  // ✅ Provider now receives the scenario's answer rate
   const provider =
     scenario.providerType === "fast"
-      ? new FastProvider("fast-provider")
-      : new UnreliableProvider("unreliable-provider", 0.1, 0.1, 200);
-
-  // Override answer rate and talk time (we'll adjust provider behaviour dynamically, but for simplicity we use the default values; you can modify provider to accept these)
-  // For this demo, we'll just use the provider as is; we'll vary answer rate by changing provider's answerRate property if we extend it.
-  // Since we don't have a setter, we'll just note that we're using the given rates.
+      ? new FastProvider("fast-provider", scenario.answerRate)
+      : new UnreliableProvider(
+          "unreliable-provider",
+          0.1,
+          0.1,
+          200,
+          scenario.answerRate,
+        );
 
   const dialer = new ProgressiveDialer(agentManager, callManager, provider);
   const pacingEngine = new PacingEngine(callManager, agentManager);
@@ -73,16 +75,12 @@ async function runScenario(scenario: Scenario) {
   );
   const duration = (Date.now() - startTime) / 1000;
 
-  // Wait for all calls to complete (simulate timers)
-  // We'll wait for max talk time + 5 seconds, but for demo we just wait a bit.
-  // Actually, we can't wait for all timers because they may be long.
-  // Instead, we'll capture the state after a short delay (e.g., 2s) to see initial transitions.
-  await new Promise((resolve) => setTimeout(resolve, 2000));
-  // Clean up stale agents/calls (simulate timeout recovery)
-  const cleanup = new TimeoutCleanup(agentManager, callManager, 5000);
-  cleanup.cleanup(); // manually trigger
-  await new Promise((resolve) => setTimeout(resolve, 1000));
-  // Then collect metrics again (or just log)
+  // Wait briefly for state transitions
+  await new Promise((resolve) => setTimeout(resolve, 500));
+
+  // ✅ Run timeout cleanup to release any stale agents/calls
+  const cleanup = new TimeoutCleanup(agentManager, callManager, 1000);
+  cleanup.cleanup();
 
   // Collect metrics
   const activeCalls = callManager.getActiveCalls();
@@ -92,7 +90,6 @@ async function runScenario(scenario: Scenario) {
   const completedCalls = callManager.getCallsByState(
     CallState.COMPLETED,
   ).length;
-  const failedCalls = callManager.getCallsByState(CallState.FAILED).length;
   const waitingCalls = callManager.getCallsWaitingForAgent().length;
   const availableAgents = agentManager.getAvailableAgents().length;
 
@@ -115,6 +112,67 @@ async function runScenario(scenario: Scenario) {
     availableAgents,
     duration,
   };
+}
+
+async function runDynamicScenario() {
+  console.log("\n=== Dynamic Scenario: Changing Conditions ===");
+
+  const agentManager = new AgentManager();
+  const callManager = new CallManager();
+
+  for (let i = 1; i <= 10; i++) {
+    agentManager.addAgent({
+      id: `A${i}`,
+      name: `Agent ${i}`,
+      state: AgentState.AVAILABLE,
+    });
+  }
+
+  const provider = new UnreliableProvider("dyn-provider", 0.1, 0.1, 100, 0.5);
+  const dialer = new ProgressiveDialer(agentManager, callManager, provider);
+  const pacing = new PacingEngine(callManager, agentManager);
+  const safety = new SafetyController(agentManager, callManager);
+
+  const phases = [
+    { answerRate: 0.7, providerHealth: 1.0, note: "Healthy, high answer rate" },
+    { answerRate: 0.5, providerHealth: 0.8, note: "Moderate degradation" },
+    { answerRate: 0.2, providerHealth: 0.4, note: "Severe degradation" },
+  ];
+
+  for (const phase of phases) {
+    pacing.updateAnswerRate(phase.answerRate);
+    pacing.updateProviderHealth(phase.providerHealth);
+
+    console.log(`\n--- Phase: ${phase.note} ---`);
+    console.log(`   Answer rate: ${(phase.answerRate * 100).toFixed(0)}%`);
+    console.log(
+      `   Provider health: ${(phase.providerHealth * 100).toFixed(0)}%`,
+    );
+
+    const rec = pacing.analyze();
+    const dec = safety.evaluate(rec.recommendedCalls, true);
+
+    console.log(`   Pacing recommendation: ${rec.recommendedCalls} calls`);
+    console.log(
+      `   Safety decision: ${dec.approved ? "APPROVED" : "REJECTED"} (${dec.approvedCalls} calls)`,
+    );
+    console.log(`   Reason: ${dec.reason}`);
+    console.log(`   Reasoning: ${rec.reasoning.join(" | ")}`);
+
+    // Actually dial to update state for next phase
+    const borrowers = Array.from(
+      { length: dec.approvedCalls },
+      (_, i) => `DynB-${phase.answerRate}-${i}`,
+    );
+    await dialer.dialProgressive(borrowers);
+
+    // Short wait to let some transitions occur
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    // Cleanup stale agents (short timeout for demo)
+    const cleanup = new TimeoutCleanup(agentManager, callManager, 2000);
+    cleanup.cleanup();
+  }
 }
 
 async function runAllScenarios() {
@@ -144,7 +202,7 @@ async function runAllScenarios() {
       providerType: "fast",
     },
     {
-      name: "D - Changing answer rate",
+      name: "D - Unreliable provider",
       answerRate: 0.5,
       avgTalkTime: 120,
       agents: 5,
@@ -172,6 +230,9 @@ async function runAllScenarios() {
       DurationSec: r.duration.toFixed(1),
     })),
   );
+
+  // ✅ Run the dynamic scenario
+  await runDynamicScenario();
 }
 
 runAllScenarios().catch(console.error);

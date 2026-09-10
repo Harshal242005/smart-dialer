@@ -11,6 +11,10 @@ export class AgentManager {
     return this.agents.get(id);
   }
 
+  getAllAgents(): Agent[] {
+    return Array.from(this.agents.values());
+  }
+
   getAvailableAgents(): Agent[] {
     return Array.from(this.agents.values()).filter(
       (agent) => agent.state === AgentState.AVAILABLE,
